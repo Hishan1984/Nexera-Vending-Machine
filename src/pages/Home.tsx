@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Wind,
@@ -205,6 +206,8 @@ const TECH_FEATURES = [
 ];
 
 export default function Home() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
   useSeo({
     title: 'Nexera Smart | Helmet Cleaning Machine & Smart Vending Solutions Dubai',
     description:
@@ -213,6 +216,39 @@ export default function Home() {
   });
 
   useJsonLd('ld-org', organizationJsonLd);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    video.muted = true;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const playPromise = video.play();
+            if (playPromise !== undefined) {
+              playPromise.catch(() => {
+                // Autoplay may be restricted or aborted by browser policy
+              });
+            }
+          } else {
+            video.pause();
+          }
+        });
+      },
+      {
+        threshold: 0.3,
+      }
+    );
+
+    observer.observe(video);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
 
   return (
     <>
@@ -372,8 +408,10 @@ export default function Home() {
             <div className="overflow-hidden rounded-2xl bg-white shadow-card border border-cloud-300/60 p-2 sm:p-3">
               <div className="relative overflow-hidden rounded-xl bg-navy">
                 <video
+                  ref={videoRef}
                   src={ASSETS.video}
                   controls
+                  muted
                   playsInline
                   preload="metadata"
                   poster={ASSETS.machine}
