@@ -3,7 +3,6 @@ import { MapPin, Phone, MessageCircle, Mail, CheckCircle2, AlertCircle, Send, Ar
 import { Link } from 'react-router-dom';
 import { useSeo, useJsonLd } from '@/lib/seo';
 import { COMPANY, SITE_URL } from '@/lib/constants';
-import { supabase } from '@/lib/supabase';
 import CtaBanner from '@/components/CtaBanner';
 
 const PROPERTY_TYPES = [
@@ -98,36 +97,6 @@ export default function Contact() {
     setStatus('submitting');
     setErrorMsg('');
 
-    let dbSuccess = false;
-    let emailSuccess = false;
-    let dbErrorMessage = '';
-    let emailErrorMessage = '';
-
-    // Step 1: Save enquiry to Supabase
-    try {
-      const { error: dbError } = await supabase.from('contact_enquiries').insert({
-        full_name: form.full_name.trim(),
-        company_name: form.company_name.trim() || null,
-        email: form.email.trim(),
-        phone: form.phone.trim() || null,
-        location: form.location.trim() || null,
-        property_type: form.property_type || null,
-        rider_footfall: form.rider_footfall.trim() || null,
-        partnership_interest: form.partnership_interest || null,
-        message: form.message.trim() || null,
-        consent: form.consent,
-      });
-
-      if (dbError) {
-        dbErrorMessage = dbError.message;
-      } else {
-        dbSuccess = true;
-      }
-    } catch (err) {
-      dbErrorMessage = err instanceof Error ? err.message : 'Database connection error';
-    }
-
-    // Step 2: Send email via authenticated server-side PHP SMTP handler
     try {
       const res = await fetch('/api/contact.php', {
         method: 'POST',
@@ -153,35 +122,25 @@ export default function Contact() {
 
       const data = (await res.json().catch(() => null)) as { success?: boolean; message?: string } | null;
 
-      if (res.ok && data?.success) {
-        emailSuccess = true;
+      if (res.ok && data?.success === true) {
+        setStatus('success');
+        setForm(INITIAL);
+        setHoneypot('');
       } else {
-        emailErrorMessage = data?.message || `Server responded with HTTP ${res.status}`;
+        setStatus('error');
+        setErrorMsg(
+          data?.message ||
+            (res.status
+              ? `Server returned error (${res.status}). Please try again or reach us via WhatsApp.`
+              : 'Unable to send enquiry. Please try again or reach us via WhatsApp.')
+        );
       }
     } catch (err) {
-      emailErrorMessage = err instanceof Error ? err.message : 'Network error reaching mail handler';
-    }
-
-    // Handle outcomes accurately without showing false success
-    if (dbSuccess && emailSuccess) {
-      setStatus('success');
-      setForm(INITIAL);
-      setHoneypot('');
-    } else if (dbSuccess && !emailSuccess) {
       setStatus('error');
       setErrorMsg(
-        `Enquiry saved to database, but email notification could not be dispatched (${emailErrorMessage}). Please contact us via WhatsApp to follow up.`
-      );
-    } else if (!emailSuccess && !dbSuccess) {
-      setStatus('error');
-      setErrorMsg(
-        `Unable to submit enquiry. Database error: ${dbErrorMessage || 'Failed'}. Email error: ${emailErrorMessage || 'Failed'}. Please contact us via WhatsApp or phone.`
-      );
-    } else {
-      // Email dispatched to server but DB failed
-      setStatus('error');
-      setErrorMsg(
-        `Notification email was dispatched to the mail server, but saving to the database failed (${dbErrorMessage}). Please contact us via WhatsApp to follow up.`
+        err instanceof Error
+          ? `Network error: ${err.message}. Please check your connection or contact us via WhatsApp.`
+          : 'Network error communicating with the mail server. Please try again or reach us via WhatsApp.'
       );
     }
   };
@@ -300,9 +259,8 @@ export default function Contact() {
                   <div className="flex items-start gap-3">
                     <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 mt-0.5" />
                     <div>
-                      <p className="text-sm font-semibold text-green-800">Enquiry submitted successfully.</p>
-                      <p className="mt-1 text-sm text-green-700">
-                        Thank you for your interest. Our team will review your enquiry shortly.
+                      <p className="text-sm font-semibold text-green-800">
+                        Thank you! Your enquiry has been sent. Our team will contact you soon.
                       </p>
                     </div>
                   </div>
