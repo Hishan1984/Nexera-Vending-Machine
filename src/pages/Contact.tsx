@@ -86,7 +86,6 @@ export default function Contact() {
 
   const [form, setForm] = useState<FormState>(INITIAL);
   const [honeypot, setHoneypot] = useState('');
-  const [formMountedAt, setFormMountedAt] = useState<number>(() => Date.now());
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -149,7 +148,6 @@ export default function Contact() {
           consent: form.consent,
           _hp: honeypot,
           website_address_hp: honeypot,
-          _ts: formMountedAt,
         }),
       });
 
@@ -169,11 +167,10 @@ export default function Contact() {
       setStatus('success');
       setForm(INITIAL);
       setHoneypot('');
-      setFormMountedAt(Date.now());
     } else if (dbSuccess && !emailSuccess) {
       setStatus('error');
       setErrorMsg(
-        `Enquiry saved to database, but notification email could not be dispatched (${emailErrorMessage}). Please contact us via WhatsApp to ensure your enquiry is received immediately.`
+        `Enquiry saved to database, but email notification could not be dispatched (${emailErrorMessage}). Please contact us via WhatsApp to follow up.`
       );
     } else if (!emailSuccess && !dbSuccess) {
       setStatus('error');
@@ -181,10 +178,10 @@ export default function Contact() {
         `Unable to submit enquiry. Database error: ${dbErrorMessage || 'Failed'}. Email error: ${emailErrorMessage || 'Failed'}. Please contact us via WhatsApp or phone.`
       );
     } else {
-      // Email succeeded but DB failed
+      // Email dispatched to server but DB failed
       setStatus('error');
       setErrorMsg(
-        `Notification email was delivered, but recording to database failed (${dbErrorMessage}). Our team has received your email and will follow up shortly.`
+        `Notification email was dispatched to the mail server, but saving to the database failed (${dbErrorMessage}). Please contact us via WhatsApp to follow up.`
       );
     }
   };
@@ -303,9 +300,9 @@ export default function Contact() {
                   <div className="flex items-start gap-3">
                     <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 mt-0.5" />
                     <div>
-                      <p className="text-sm font-semibold text-green-800">Enquiry sent successfully.</p>
+                      <p className="text-sm font-semibold text-green-800">Enquiry submitted successfully.</p>
                       <p className="mt-1 text-sm text-green-700">
-                        Thank you for your interest. Our team will be in touch shortly.
+                        Thank you for your interest. Our team will review your enquiry shortly.
                       </p>
                     </div>
                   </div>

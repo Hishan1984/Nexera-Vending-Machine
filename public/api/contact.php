@@ -31,137 +31,30 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 // -----------------------------------------------------------------------------
-// 1. RATE LIMITING (Max 3 submissions per IP per 10 minutes)
+// 1. REQUEST SIZE LIMIT (Max 50 KB)
 // -----------------------------------------------------------------------------
-function getClientIp(): string {
-    $headers = [
-        'HTTP_CF_CONNECTING_IP',
-        'HTTP_X_REAL_IP',
-        'HTTP_X_FORWARDED_FOR',
-        'REMOTE_ADDR'
-    ];
-    foreach ($headers as $h) {
-        if (!empty($_SERVER[$h])) {
-            $ipList = explode(',', $_SERVER[$h]);
-            $ip = trim($ipList[0]);
-            if (filter_var($ip, FILTER_VALIDATE_IP)) {
-                return $ip;
-            }
-        }
-    }
-    return '0.0.0.0';
-}
-
-$clientIp = getClientIp();
-$rateLimitDir = sys_get_temp_dir() . '/nexera_rate_limits';
-if (!is_dir($rateLimitDir)) {
-    @mkdir($rateLimitDir, 0755, true);
-}
-
-$rateFile = $rateLimitDir . '/' . md5('contact_' . $clientIp) . '.json';
-$now = time();
-$windowSeconds = 600; // 10 minutes
-$maxAttempts = 4;
-
-$attempts = [];
-if (file_exists($rateFile)) {
-    $data = @json_decode((string)file_get_contents($rateFile), true);
-    if (is_array($data)) {
-        $attempts = array_filter($data, fn($t) => ($now - $t) < $windowSeconds);
-    }
-}
-
-if (count($attempts) >= $maxAttempts) {
-    http_response_code(429);
+$contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
+if ($contentLength > 51200) {
+    http_response_code(413);
     echo json_encode([
         'success' => false,
-        'message' => 'Too many requests. Please wait a few minutes before submitting another enquiry.'
+        'message' => 'Payload Too Large. Maximum allowed request size is 50 KB.'
     ]);
     exit;
 }
 
-// -----------------------------------------------------------------------------
-// 2. PARSE AND SANITIZE INPUT
-// -----------------------------------------------------------------------------
 $rawInput = file_get_contents('php://input');
-$input = json_decode($rawInput, true);
-
-if (!is_array($input)) {
-    http_response_code(400);
+if ($rawInput === false || strlen($rawInput) > 51200) {
+    http_response_code(413);
     echo json_encode([
         'success' => false,
-        'message' => 'Invalid JSON payload received.'
-    ]);
-    exit;
-}
-
-// Spam Trap 1: Honeypot check
-if (!empty($input['_hp']) || !empty($input['website_address_hp'])) {
-    // Silently accept without sending to avoid informing bots
-    echo json_encode([
-        'success' => true,
-        'message' => 'Thank you for reaching out.'
-    ]);
-    exit;
-}
-
-// Spam Trap 2: Minimum submission time (prevent instant programmatic spam)
-if (isset($input['_ts']) && is_numeric($input['_ts'])) {
-    $elapsed = ($now * 1000) - (float)$input['_ts'];
-    if ($elapsed < 1500) { // Under 1.5 seconds from form load is likely a bot
-        echo json_encode([
-            'success' => true,
-            'message' => 'Thank you for reaching out.'
-        ]);
-        exit;
-    }
-}
-
-// Field extraction & sanitization
-$fullName            = trim((string)($input['full_name'] ?? ''));
-$companyName         = trim((string)($input['company_name'] ?? ''));
-$email               = trim((string)($input['email'] ?? ''));
-$phone               = trim((string)($input['phone'] ?? ''));
-$location            = trim((string)($input['location'] ?? ''));
-$propertyType        = trim((string)($input['property_type'] ?? ''));
-$riderFootfall       = trim((string)($input['rider_footfall'] ?? ''));
-$partnershipInterest = trim((string)($input['partnership_interest'] ?? ''));
-$message             = trim((string)($input['message'] ?? ''));
-$consent             = !empty($input['consent']);
-
-// Validation
-$errors = [];
-if ($fullName === '' || mb_strlen($fullName) < 2) {
-    $errors[] = 'Full name is required (minimum 2 characters).';
-}
-if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-    $errors[] = 'A valid email address is required.';
-}
-if (!$consent) {
-    $errors[] = 'You must agree to the processing of your contact details.';
-}
-
-// Character length boundaries
-if (mb_strlen($fullName) > 100) $fullName = mb_substr($fullName, 0, 100);
-if (mb_strlen($companyName) > 120) $companyName = mb_substr($companyName, 0, 120);
-if (mb_strlen($phone) > 50) $phone = mb_substr($phone, 0, 50);
-if (mb_strlen($location) > 200) $location = mb_substr($location, 0, 200);
-if (mb_strlen($propertyType) > 100) $propertyType = mb_substr($propertyType, 0, 100);
-if (mb_strlen($riderFootfall) > 100) $riderFootfall = mb_substr($riderFootfall, 0, 100);
-if (mb_strlen($partnershipInterest) > 100) $partnershipInterest = mb_substr($partnershipInterest, 0, 100);
-if (mb_strlen($message) > 3000) $message = mb_substr($message, 0, 3000);
-
-if (!empty($errors)) {
-    http_response_code(422);
-    echo json_encode([
-        'success' => false,
-        'message' => implode(' ', $errors)
+        'message' => 'Payload Too Large. Maximum allowed request size is 50 KB.'
     ]);
     exit;
 }
 
 // -----------------------------------------------------------------------------
-// 3. LOAD PRIVATE SMTP CONFIGURATION (Outside public_html)
+// 2. LOAD PRIVATE SMTP CONFIGURATION (Outside public_html)
 // -----------------------------------------------------------------------------
 $possibleConfigPaths = [
     '/home/nexerave/config/email_config.php',
@@ -182,6 +75,197 @@ foreach ($possibleConfigPaths as $cfgPath) {
     }
 }
 
+// -----------------------------------------------------------------------------
+// 3. RATE LIMITING WITH ATOMIC FILE LOCKING & RESERVATION
+//    Uses REMOTE_ADDR unless trusted_proxies are explicitly configured.
+// -----------------------------------------------------------------------------
+function getClientIp(?array $config): string {
+    $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $trustedProxies = $config['trusted_proxies'] ?? [];
+
+    if (!empty($trustedProxies) && is_array($trustedProxies) && in_array($remoteAddr, $trustedProxies, true)) {
+        $headers = [
+            'HTTP_CF_CONNECTING_IP',
+            'HTTP_X_REAL_IP',
+            'HTTP_X_FORWARDED_FOR',
+        ];
+        foreach ($headers as $h) {
+            if (!empty($_SERVER[$h])) {
+                $ips = explode(',', (string)$_SERVER[$h]);
+                $firstIp = trim($ips[0]);
+                if (filter_var($firstIp, FILTER_VALIDATE_IP)) {
+                    return $firstIp;
+                }
+            }
+        }
+    }
+
+    return filter_var($remoteAddr, FILTER_VALIDATE_IP) ? $remoteAddr : '0.0.0.0';
+}
+
+$clientIp = getClientIp($config);
+$rateLimitDir = sys_get_temp_dir() . '/nexera_rate_limits';
+if (!is_dir($rateLimitDir)) {
+    @mkdir($rateLimitDir, 0755, true);
+}
+
+$rateFile = $rateLimitDir . '/' . hash('sha256', 'contact_' . $clientIp) . '.json';
+$now = time();
+$windowSeconds = 600; // 10 minutes
+$maxAttempts = 4;
+
+$fp = @fopen($rateFile, 'c+');
+if ($fp === false) {
+    error_log('[Nexera Email Handler] Could not open rate limit file: ' . $rateFile);
+} else {
+    if (flock($fp, LOCK_EX)) {
+        $content = '';
+        $filesize = @filesize($rateFile);
+        if ($filesize && $filesize > 0) {
+            $content = (string)fread($fp, $filesize);
+        }
+        $attempts = [];
+        if ($content !== '') {
+            $decoded = json_decode($content, true);
+            if (is_array($decoded)) {
+                $attempts = array_filter($decoded, fn($t) => is_int($t) && ($now - $t) < $windowSeconds);
+            }
+        }
+
+        if (count($attempts) >= $maxAttempts) {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+            http_response_code(429);
+            echo json_encode([
+                'success' => false,
+                'message' => 'Too many requests. Please wait a few minutes before submitting another enquiry.'
+            ]);
+            exit;
+        }
+
+        // Reserve attempt BEFORE SMTP sending
+        $attempts[] = $now;
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, json_encode(array_values($attempts)));
+        fflush($fp);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+    } else {
+        fclose($fp);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// 4. PARSE AND VALIDATE INPUT
+// -----------------------------------------------------------------------------
+$input = json_decode($rawInput, true);
+
+if (!is_array($input)) {
+    http_response_code(400);
+    echo json_encode([
+        'success' => false,
+        'message' => 'Invalid JSON payload received.'
+    ]);
+    exit;
+}
+
+// Honeypot check - reject bot submissions with 400
+if (
+    (!empty($input['_hp']) && is_string($input['_hp']) && trim($input['_hp']) !== '') ||
+    (!empty($input['website_address_hp']) && is_string($input['website_address_hp']) && trim($input['website_address_hp']) !== '')
+) {
+    http_response_code(400);
+    echo json_encode([
+        'success' => false,
+        'message' => 'Spam verification failed.'
+    ]);
+    exit;
+}
+
+// Validate field types before any casting
+$expectedStringFields = [
+    'full_name',
+    'company_name',
+    'email',
+    'phone',
+    'location',
+    'property_type',
+    'rider_footfall',
+    'partnership_interest',
+    'message',
+];
+
+$typeErrors = [];
+foreach ($expectedStringFields as $field) {
+    if (array_key_exists($field, $input)) {
+        if ($input[$field] !== null && !is_string($input[$field])) {
+            $typeErrors[] = "Field '{$field}' must be a string.";
+        }
+    }
+}
+
+if (!empty($typeErrors)) {
+    http_response_code(422);
+    echo json_encode([
+        'success' => false,
+        'message' => implode(' ', $typeErrors)
+    ]);
+    exit;
+}
+
+// Require consent to be strictly boolean true
+if (!isset($input['consent']) || $input['consent'] !== true) {
+    http_response_code(422);
+    echo json_encode([
+        'success' => false,
+        'message' => 'Consent must be explicitly granted (boolean true).'
+    ]);
+    exit;
+}
+
+// Extract trimmed strings
+$fullName            = trim((string)($input['full_name'] ?? ''));
+$companyName         = trim((string)($input['company_name'] ?? ''));
+$email               = trim((string)($input['email'] ?? ''));
+$phone               = trim((string)($input['phone'] ?? ''));
+$location            = trim((string)($input['location'] ?? ''));
+$propertyType        = trim((string)($input['property_type'] ?? ''));
+$riderFootfall       = trim((string)($input['rider_footfall'] ?? ''));
+$partnershipInterest = trim((string)($input['partnership_interest'] ?? ''));
+$message             = trim((string)($input['message'] ?? ''));
+
+// Validate required values and format
+$validationErrors = [];
+if ($fullName === '' || mb_strlen($fullName) < 2) {
+    $validationErrors[] = 'Full name is required (minimum 2 characters).';
+}
+if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    $validationErrors[] = 'A valid email address is required.';
+}
+
+// Boundary enforcement
+if (mb_strlen($fullName) > 100) $fullName = mb_substr($fullName, 0, 100);
+if (mb_strlen($companyName) > 120) $companyName = mb_substr($companyName, 0, 120);
+if (mb_strlen($phone) > 50) $phone = mb_substr($phone, 0, 50);
+if (mb_strlen($location) > 200) $location = mb_substr($location, 0, 200);
+if (mb_strlen($propertyType) > 100) $propertyType = mb_substr($propertyType, 0, 100);
+if (mb_strlen($riderFootfall) > 100) $riderFootfall = mb_substr($riderFootfall, 0, 100);
+if (mb_strlen($partnershipInterest) > 100) $partnershipInterest = mb_substr($partnershipInterest, 0, 100);
+if (mb_strlen($message) > 3000) $message = mb_substr($message, 0, 3000);
+
+if (!empty($validationErrors)) {
+    http_response_code(422);
+    echo json_encode([
+        'success' => false,
+        'message' => implode(' ', $validationErrors)
+    ]);
+    exit;
+}
+
+// -----------------------------------------------------------------------------
+// 5. VERIFY SMTP CONFIGURATION
+// -----------------------------------------------------------------------------
 if (!$config || empty($config['smtp_pass']) || $config['smtp_pass'] === 'YOUR_MAILBOX_PASSWORD_HERE') {
     error_log('[Nexera Email Handler] Private configuration missing or SMTP password not set in /home/nexerave/config/email_config.php');
     http_response_code(500);
@@ -193,7 +277,7 @@ if (!$config || empty($config['smtp_pass']) || $config['smtp_pass'] === 'YOUR_MA
 }
 
 // -----------------------------------------------------------------------------
-// 4. PHPMailer INITIALIZATION & DELIVERY
+// 6. PHPMailer INITIALIZATION & DELIVERY
 // -----------------------------------------------------------------------------
 require_once __DIR__ . '/phpmailer/Exception.php';
 require_once __DIR__ . '/phpmailer/PHPMailer.php';
@@ -211,7 +295,7 @@ try {
     $mail->SMTPAuth   = true;
     $mail->Username   = $config['smtp_user'] ?? 'info@nexeravendingmachine.ae';
     $mail->Password   = (string)$config['smtp_pass'];
-    
+
     // SSL on Port 465
     $port = (int)($config['smtp_port'] ?? 465);
     $mail->Port = $port;
@@ -224,7 +308,7 @@ try {
     if (!empty($config['smtp_options']) && is_array($config['smtp_options'])) {
         $mail->SMTPOptions = $config['smtp_options'];
     }
-    
+
     $mail->CharSet = 'UTF-8';
     $mail->Timeout = 15;
 
@@ -237,12 +321,12 @@ try {
     $toName  = $config['to_name'] ?? 'Nexera Smart Team';
     $mail->addAddress($toEmail, $toName);
 
-    // Reply-To points to the visitor's verified email
+    // Reply-To points to visitor's validated email
     $mail->addReplyTo($email, $fullName);
 
     // Subject
-    $subjectLocation = $location !== '' ? " ($location)" : '';
-    $subjectProperty = $propertyType !== '' ? " - $propertyType" : '';
+    $subjectLocation = $location !== '' ? " ({$location})" : '';
+    $subjectProperty = $propertyType !== '' ? " - {$propertyType}" : '';
     $mail->Subject = "New Location Enquiry: {$fullName}{$subjectProperty}{$subjectLocation}";
 
     // HTML Body
@@ -296,7 +380,6 @@ try {
         <tr><th>Rider Footfall</th><td>{$safeFootfall}</td></tr>
         <tr><th>Partnership Model</th><td>{$safeInterest}</td></tr>
         <tr><th>Submission Time</th><td>{$formattedDate}</td></tr>
-        <tr><th>Submitter IP</th><td>{$clientIp}</td></tr>
       </table>
 
       <h3 style="font-size: 14px; color: #082B59; margin: 20px 0 8px 0;">Message / Details:</h3>
@@ -326,7 +409,6 @@ Property Type:        {$propertyType}
 Rider Footfall:       {$riderFootfall}
 Partnership Model:    {$partnershipInterest}
 Submission Time:      {$formattedDate}
-Submitter IP:         {$clientIp}
 
 Message / Comments:
 -------------------
@@ -342,27 +424,23 @@ TEXT;
 
     $mail->send();
 
-    // Record rate limit attempt
-    $attempts[] = $now;
-    @file_put_contents($rateFile, json_encode($attempts));
-
     http_response_code(200);
     echo json_encode([
         'success' => true,
-        'message' => 'Your enquiry has been successfully delivered to the Nexera Smart team.'
+        'message' => 'Your enquiry has been dispatched to our mail server successfully.'
     ]);
 } catch (Exception $e) {
     error_log("[Nexera Email Handler] PHPMailer Error: {$mail->ErrorInfo} | Exception: {$e->getMessage()}");
     http_response_code(500);
     echo json_encode([
         'success' => false,
-        'message' => 'Unable to send email notification at this moment. Our team has been notified. Please try again or reach us via WhatsApp.'
+        'message' => 'Unable to dispatch email notification at this time. Please contact us directly via WhatsApp or phone.'
     ]);
 } catch (\Throwable $e) {
     error_log("[Nexera Email Handler] Unexpected Error: {$e->getMessage()}");
     http_response_code(500);
     echo json_encode([
         'success' => false,
-        'message' => 'A server error occurred while processing your email. Please reach us via WhatsApp.'
+        'message' => 'A server error occurred while processing your enquiry. Please reach us via WhatsApp or phone.'
     ]);
 }

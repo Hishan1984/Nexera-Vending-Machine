@@ -24,4 +24,8 @@ return [
     'to_name'     => 'Nexera Smart Enquiries',
     'from_email'  => 'info@nexeravendingmachine.ae',
     'from_name'   => 'Nexera Smart Web Enquiry',
+
+    // Optional: Array of trusted reverse proxy IP addresses (e.g. if using Cloudflare).
+    // When left empty or omitted, rate limiting uses REMOTE_ADDR exclusively.
+    // 'trusted_proxies' => [],
 ];
