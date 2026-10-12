@@ -1,0 +1,6 @@
+# Redirect non-www to www (HTTPS)
+https://nexerasmart.ae/* https://www.nexerasmart.ae/:splat 301!
+
+# Redirect HTTP to HTTPS (handled by hosting platform)
+# SPA fallback — all routes to index.html
+/* /index.html 200

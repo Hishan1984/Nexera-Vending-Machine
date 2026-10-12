@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+
+# Disallow private and administrative assets
+Disallow: /api/
+Disallow: /_redirects
+
+# Host & Sitemap specification
+Host: https://www.nexerasmart.ae
+Sitemap: https://www.nexerasmart.ae/sitemap.xml
