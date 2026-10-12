@@ -85,6 +85,8 @@ export default function Contact() {
   useJsonLd('ld-breadcrumb', breadcrumb);
 
   const [form, setForm] = useState<FormState>(INITIAL);
+  const [honeypot, setHoneypot] = useState('');
+  const [formMountedAt, setFormMountedAt] = useState<number>(() => Date.now());
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -97,26 +99,93 @@ export default function Contact() {
     setStatus('submitting');
     setErrorMsg('');
 
+    let dbSuccess = false;
+    let emailSuccess = false;
+    let dbErrorMessage = '';
+    let emailErrorMessage = '';
+
+    // Step 1: Save enquiry to Supabase
     try {
-      const { error } = await supabase.from('contact_enquiries').insert({
-        full_name: form.full_name,
-        company_name: form.company_name || null,
-        email: form.email,
-        phone: form.phone || null,
-        location: form.location || null,
+      const { error: dbError } = await supabase.from('contact_enquiries').insert({
+        full_name: form.full_name.trim(),
+        company_name: form.company_name.trim() || null,
+        email: form.email.trim(),
+        phone: form.phone.trim() || null,
+        location: form.location.trim() || null,
         property_type: form.property_type || null,
-        rider_footfall: form.rider_footfall || null,
+        rider_footfall: form.rider_footfall.trim() || null,
         partnership_interest: form.partnership_interest || null,
-        message: form.message || null,
+        message: form.message.trim() || null,
         consent: form.consent,
       });
 
-      if (error) throw error;
+      if (dbError) {
+        dbErrorMessage = dbError.message;
+      } else {
+        dbSuccess = true;
+      }
+    } catch (err) {
+      dbErrorMessage = err instanceof Error ? err.message : 'Database connection error';
+    }
+
+    // Step 2: Send email via authenticated server-side PHP SMTP handler
+    try {
+      const res = await fetch('/api/contact.php', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          full_name: form.full_name.trim(),
+          company_name: form.company_name.trim(),
+          email: form.email.trim(),
+          phone: form.phone.trim(),
+          location: form.location.trim(),
+          property_type: form.property_type,
+          rider_footfall: form.rider_footfall.trim(),
+          partnership_interest: form.partnership_interest,
+          message: form.message.trim(),
+          consent: form.consent,
+          _hp: honeypot,
+          website_address_hp: honeypot,
+          _ts: formMountedAt,
+        }),
+      });
+
+      const data = (await res.json().catch(() => null)) as { success?: boolean; message?: string } | null;
+
+      if (res.ok && data?.success) {
+        emailSuccess = true;
+      } else {
+        emailErrorMessage = data?.message || `Server responded with HTTP ${res.status}`;
+      }
+    } catch (err) {
+      emailErrorMessage = err instanceof Error ? err.message : 'Network error reaching mail handler';
+    }
+
+    // Handle outcomes accurately without showing false success
+    if (dbSuccess && emailSuccess) {
       setStatus('success');
       setForm(INITIAL);
-    } catch (err) {
+      setHoneypot('');
+      setFormMountedAt(Date.now());
+    } else if (dbSuccess && !emailSuccess) {
       setStatus('error');
-      setErrorMsg(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
+      setErrorMsg(
+        `Enquiry saved to database, but notification email could not be dispatched (${emailErrorMessage}). Please contact us via WhatsApp to ensure your enquiry is received immediately.`
+      );
+    } else if (!emailSuccess && !dbSuccess) {
+      setStatus('error');
+      setErrorMsg(
+        `Unable to submit enquiry. Database error: ${dbErrorMessage || 'Failed'}. Email error: ${emailErrorMessage || 'Failed'}. Please contact us via WhatsApp or phone.`
+      );
+    } else {
+      // Email succeeded but DB failed
+      setStatus('error');
+      setErrorMsg(
+        `Notification email was delivered, but recording to database failed (${dbErrorMessage}). Our team has received your email and will follow up shortly.`
+      );
     }
   };
 
@@ -282,6 +351,20 @@ export default function Contact() {
 
               {status !== 'success' && (
                 <form onSubmit={handleSubmit} className="mt-6 space-y-5">
+                  {/* Honeypot field hidden from users for bot protection */}
+                  <div className="hidden" aria-hidden="true" style={{ display: 'none' }}>
+                    <label htmlFor="website_address_hp">Do not fill this field</label>
+                    <input
+                      id="website_address_hp"
+                      name="website_address_hp"
+                      type="text"
+                      tabIndex={-1}
+                      autoComplete="off"
+                      value={honeypot}
+                      onChange={(e) => setHoneypot(e.target.value)}
+                    />
+                  </div>
+
                   <div className="grid gap-5 sm:grid-cols-2">
                     <div>
                       <label htmlFor="full_name" className="block text-sm font-medium text-navy mb-1.5">

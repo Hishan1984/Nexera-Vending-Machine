@@ -1,0 +1,14 @@
+# Nexera Smart - LiteSpeed / Apache Configuration
+
+RewriteEngine On
+
+# Ensure API requests and real files/folders are not rewritten to index.html
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.html [L]
+
+# Security: Deny access to hidden dotfiles
+<FilesMatch "^\.">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
